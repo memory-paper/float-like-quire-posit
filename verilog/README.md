@@ -1,7 +1,9 @@
 # The proposed MAC unit verilog
 ## mac_verification.cpp
 This is a program for generating test data.
+
 Please download Universal Library from [the link](https://github.com/stillwater-sc/universal).
+
 You can change the numerical precision(nbits), es(es), the size of the guard bits(capacity), and the range of the input values(from FLOAT_MIN to FLOAT_MAX).
 ```
 constexpr size_t nbits    = 8;
