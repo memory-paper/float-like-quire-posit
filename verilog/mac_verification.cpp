@@ -35,16 +35,17 @@ int main(){
   //parameter
   constexpr size_t nbits    = 8;
   constexpr size_t es       = 1;
-  constexpr size_t capacity = 2;
+  constexpr size_t capacity = 13;
+  float FLOAT_MIN = -1;
+  float FLOAT_MAX =  1;
+  int loop =  1000;
   
   std::string x_filename    = "x_value.txt";
   std::string w_filename    = "w_value.txt";
   std::string o_filename    = "o_value.txt";
   std::string q_filename    = "q_value.txt";
   std::string c_filename    = "cal.txt";
-  int loop =  1000;
-  float FLOAT_MIN = -1;
-  float FLOAT_MAX =  1;
+
   
   //randomvalue
   //std::random_device rd;

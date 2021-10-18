@@ -1,13 +1,12 @@
 `timescale 1ns / 1ns
 module mac_f_tb;
 parameter N = 8;
-parameter es = 1;
 reg [N-1:0] IN1, IN2, BIAS;
 reg MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, REG_START, START;
 wire [N-1:0] OUT;
 parameter STEP = 100;
 
-posit_mac_f #(.N(N), .es(es)) posit_mac_f_test (IN1, IN2, BIAS, MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, OUT);
+posit_mac_f_es0 #(.N(N)) posit_mac_f_test (IN1, IN2, BIAS, MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, OUT);
 
 always begin
   CLK = ~CLK; #(STEP/2);

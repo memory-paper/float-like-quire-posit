@@ -1,5 +1,5 @@
 `timescale 1ns / 1ns
-module posit_mac_f(IN1, IN2, BIAS, MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, OUT);
+module posit_mac_f_es0(IN1, IN2, BIAS, MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, OUT);
 
 function [31:0] log2;
 input reg [31:0] value;
@@ -11,16 +11,15 @@ input reg [31:0] value;
 endfunction
 
 parameter N = 8;
-parameter es = 1;
-parameter qsize = 50;
+parameter qsize = 20;
 parameter ext = 13;
 
 parameter Bs = log2(N);
-parameter bias = (2**(es+1))*(N-2);
+parameter bias = 2*(N-2);
 parameter qsize2 = (2*bias)+2 + ext;
 parameter q_s1 = log2(qsize);
 parameter q_s2 = log2(qsize2);
-parameter mult_bw = 2*(N-es-2);
+parameter mult_bw = 2*(N-2);
 parameter ss = log2(qsize2 - qsize);
 parameter quire_bias = qsize - 2;
 
@@ -35,13 +34,12 @@ assign bias_in = BIAS_EN ? BIAS : 0;
 wire [N-1:0] xbias = bias_in[N-1] ? -bias_in : bias_in;
 wire rc_b;
 wire [Bs-1:0] regime_b;
-wire [es-1:0] e_b;
-wire [N-es-4:0] mant_b;
-data_extract #(.N(N), .es(es)) decode_bias(.in(xbias), .rc(rc_b), .regime(regime_b), .exp(e_b), .mant(mant_b));
-wire [N-es-3:0] m_b = {1'b1,mant_b};
+wire [N-4:0] mant_b;
+data_extract #(.N(N)) decode_bias(.in(xbias), .rc(rc_b), .regime(regime_b), .mant(mant_b));
+wire [N-3:0] m_b = {1'b1,mant_b};
 wire [Bs:0] r_b = rc_b ? {1'b0,regime_b} : -regime_b;
-wire [Bs+es:0] bias_ex = {r_b,e_b} + bias;
-wire signed [mult_bw:0] acc_bias_value = bias_in[N-1] ? -m_b <<< (mult_bw - (N-es-3) - 1) : m_b <<< (mult_bw - (N-es-3) - 1);
+wire [Bs:0] bias_ex = r_b + bias;
+wire signed [mult_bw:0] acc_bias_value = bias_in[N-1] ? -m_b <<< (mult_bw - (N-3) - 1) : m_b <<< (mult_bw - (N-3) - 1);
 
 //Decode
 wire s1 = IN1[N-1];
@@ -53,13 +51,12 @@ wire zero2 = ~(IN2[N-1] | zero_tmp2);
 assign zero = zero1 & zero2;
 wire rc1, rc2;
 wire [Bs-1:0] regime1, regime2;
-wire [es-1:0] e1, e2;
-wire [N-es-4:0] mant1, mant2;
+wire [N-4:0] mant1, mant2;
 wire [N-1:0] xin1 = s1 ? -IN1 : IN1;
 wire [N-1:0] xin2 = s2 ? -IN2 : IN2;
-data_extract #(.N(N), .es(es)) decode1(.in(xin1), .rc(rc1), .regime(regime1), .exp(e1), .mant(mant1));
-data_extract #(.N(N), .es(es)) decode2(.in(xin2), .rc(rc2), .regime(regime2), .exp(e2), .mant(mant2));
-wire [N-es-3:0] m1 = {zero_tmp1,mant1}, m2 = {zero_tmp2,mant2};
+data_extract #(.N(N)) decode1(.in(xin1), .rc(rc1), .regime(regime1), .mant(mant1));
+data_extract #(.N(N)) decode2(.in(xin2), .rc(rc2), .regime(regime2), .mant(mant2));
+wire [N-3:0] m1 = {zero_tmp1,mant1}, m2 = {zero_tmp2,mant2};
 
 //multiplication
 wire mult_s = s1 ^ s2;
@@ -69,11 +66,11 @@ wire [mult_bw-1:0] mult_mN_tmp = ~mult_m_ovf ? mult_m << 1'b1 : mult_m;
 wire [mult_bw:0] mult_mN = mult_s ? -{1'b0,mult_mN_tmp} : {1'b0,mult_mN_tmp};
 wire signed [Bs+1:0] r1 = rc1 ? {2'b0,regime1} : -regime1;
 wire signed [Bs+1:0] r2 = rc2 ? {2'b0,regime2} : -regime2;
-wire [Bs+es+1:0] mult_e;
-add_N_Cin #(.N(N), .es(es)) exp_add({r1,e1}, {r2,e2}, mult_m_ovf, mult_e);
+wire [Bs+1:0] mult_e;
+add_N_Cin #(.N(N)) exp_add(r1, r2, mult_m_ovf, mult_e);
 
 reg signed [mult_bw:0] mult_reg;
-reg [Bs+es+1:0] mult_scale_reg;
+reg [Bs+1:0] mult_scale_reg;
 always @(posedge CLK or negedge RESET)begin
     if(RESET == 1'b0)
         mult_reg <= 0;
@@ -97,7 +94,7 @@ end
 
 //accumulation
 reg signed [mult_bw:0] mult;
-reg [Bs+es+1:0] mult_scale;
+reg [Bs+1:0] mult_scale;
 reg [ss-1:0] q_scale_reg;
 reg signed [qsize-1:0] quire_reg;
 reg signed [qsize+mult_bw-2:0] add_value;
@@ -198,13 +195,12 @@ LOD_N #(.N(qsize)) valid_quire(.in(quire_abs), .out(val_quire));
 wire [qsize-1:0] quire_frac_s;
 DLS #(.N(qsize), .S(q_s1), .O(qsize)) get_qfrac (.a(quire_abs), .b(val_quire), .c(quire_frac_s));
 
-wire signed [es+Bs+1:0] quire_exp = q_scale_reg - (val_quire + 1) + qsize - bias;
+wire signed [Bs+1:0] quire_exp = q_scale_reg - (val_quire + 1) + qsize - bias;
 
-wire [es-1:0] e_o;
 wire [Bs:0] r_o;
-reg_exp_op #(.es(es), .Bs(Bs), .N(N)) e_r_out(quire_exp, e_o, r_o);
+reg_exp_op #(.Bs(Bs), .N(N)) e_r_out(quire_exp, r_o);
 
-wire [2*N-1+3:0] tmp_o = {{N{~quire_exp[es+Bs+1]}},quire_exp[es+Bs+1],e_o,quire_frac_s[qsize-2:(qsize-2)-((N-1-es)+1)],|quire_frac_s[((qsize-2)-((N-1-es)+1))-1:0]};
+wire [2*N-1+3:0] tmp_o = {{N{~quire_exp[Bs+1]}},quire_exp[Bs+1],quire_frac_s[qsize-2:(qsize-2)-((N-1)+1)],|quire_frac_s[((qsize-2)-((N-1)+1))-1:0]};
 
 wire [3*N-1+3:0] tmp1_o;
 DRS #(.N(3*N+3), .S(Bs+1), .O(3*N+3)) drs (.a({tmp_o,{N{1'b0}}}), .b(r_o), .c(tmp1_o));
@@ -230,7 +226,7 @@ endmodule
 
 ///////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////
-module data_extract(in, rc, regime, exp, mant);
+module data_extract(in, rc, regime, mant);
 
 function [31:0] log2;
 input reg [31:0] value;
@@ -243,12 +239,10 @@ endfunction
 
 parameter N=8;
 parameter Bs=log2(N);
-parameter es = 1;
 input [N-1:0] in;
 output rc;
 output [Bs-1:0] regime;
-output [es-1:0] exp;
-output [N-es-4:0] mant;
+output [N-4:0] mant;
 
 wire [N-1:0] xin = in;
 assign rc = xin[N-2];
@@ -263,8 +257,7 @@ assign regime = rc ? k-1 : k;
 wire [N-1:0] xin_tmp;
 DLS #(.N(N), .S(Bs), .O(N)) ls (.a({xin[N-3:0],2'b0}),.b(k),.c(xin_tmp));
 
-assign exp= xin_tmp[N-1:N-es];
-assign mant = xin_tmp[N-es-1:3];
+assign mant = xin_tmp[N-1:3];
 
 endmodule
 
@@ -368,31 +361,23 @@ input reg [31:0] value;
 endfunction
 parameter N = 8;
 parameter Bs = log2(N);
-parameter es = 1;
-parameter bias = (2**(es+1))*(N-2);
-input signed [Bs+es+1:0] a,b;
+parameter bias = 2*(N-2);
+input signed [Bs+1:0] a,b;
 input cin;
-output [Bs+es+1:0] c;
+output [Bs+1:0] c;
 assign c = a + b + cin + bias;
 endmodule
 
-module reg_exp_op (exp_o, e_o, r_o);
-parameter es=1;
+module reg_exp_op (exp_o, r_o);
 parameter Bs=3;
 parameter N = 8;
-input [es+Bs+1:0] exp_o;
-output [es-1:0] e_o;
+input [Bs+1:0] exp_o;
 output [Bs:0] r_o;
 
-assign e_o = exp_o[es-1:0];
-
-wire [es+Bs:0] exp_oN_tmp;
-conv_2c #(.N(es+Bs)) uut_conv_2c1 (~exp_o[es+Bs:0],exp_oN_tmp);
-wire [es+Bs:0] exp_oN = exp_o[es+Bs+1] ? exp_oN_tmp[es+Bs:0] : exp_o[es+Bs:0];
-
 wire [Bs:0] r_o_tmp;
-assign r_o_tmp = (~exp_o[es+Bs+1] || |(exp_oN[es-1:0])) ? exp_oN[es+Bs:es] + 1 : exp_oN[es+Bs:es];
-assign r_o = (r_o_tmp > N-1) ? N-1 : r_o_tmp;
+assign r_o_tmp = exp_o[Bs+1] ? (~exp_o[Bs:0]) + 1 : exp_o[Bs:0] + 1;
+wire [Bs:0] r_o;
+assign r_o = (r_o_tmp > (N-1)) ? N-1 : r_o_tmp;
 endmodule
 
 module conv_2c (a,c);

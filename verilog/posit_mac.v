@@ -1,5 +1,5 @@
 `timescale 1ns / 1ns
-module posit_mac_f(IN1, IN2, BIAS, MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, OUT);
+module posit_mac(IN1, IN2, BIAS, MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN, CLK, RESET, OUT);
 
 function [31:0] log2;
 input reg [31:0] value;
@@ -11,25 +11,19 @@ input reg [31:0] value;
 endfunction
 
 parameter N = 8;
-parameter es = 1;
-parameter qsize = 50;
-parameter ext = 13;
-
 parameter Bs = log2(N);
+parameter es = 1;
 parameter bias = (2**(es+1))*(N-2);
-parameter qsize2 = (2*bias)+2 + ext;
-parameter q_s1 = log2(qsize);
-parameter q_s2 = log2(qsize2);
-parameter mult_bw = 2*(N-es-2);
-parameter ss = log2(qsize2 - qsize);
-parameter quire_bias = qsize - 2;
+parameter qsize = (2*bias)+2;
+parameter ext = 13;
+parameter ss = log2(qsize+ext);
 
 input [N-1:0] IN1, IN2, BIAS;
 input MAC_EN, PURGE, RESULT_REQ_PLS, BIAS_EN;
 input CLK, RESET;
 output [N-1:0] OUT;
 
-//Bias Decode
+//BIAS用のデコード
 wire [N-1:0] bias_in;
 assign bias_in = BIAS_EN ? BIAS : 0;
 wire [N-1:0] xbias = bias_in[N-1] ? -bias_in : bias_in;
@@ -39,11 +33,13 @@ wire [es-1:0] e_b;
 wire [N-es-4:0] mant_b;
 data_extract #(.N(N), .es(es)) decode_bias(.in(xbias), .rc(rc_b), .regime(regime_b), .exp(e_b), .mant(mant_b));
 wire [N-es-3:0] m_b = {1'b1,mant_b};
-wire [Bs:0] r_b = rc_b ? {1'b0,regime_b} : -regime_b;
-wire [Bs+es:0] bias_ex = {r_b,e_b} + bias;
-wire signed [mult_bw:0] acc_bias_value = bias_in[N-1] ? -m_b <<< (mult_bw - (N-es-3) - 1) : m_b <<< (mult_bw - (N-es-3) - 1);
+wire [Bs+1:0] r_b = rc_b ? {2'b0,regime_b} : -regime_b;
+wire [Bs+es+1:0] bias_shift = {r_b,e_b} + bias;
+wire [2*bias-1+(N-es-2):0] fixed_bias;
+DLS #(.N(N-es-2), .S(Bs+es+2), .O(2*bias+(N-es-2))) bias_to_fixed (.a(m_b), .b(bias_shift), .c(fixed_bias));
+wire [qsize-1+ext:0] bias_acc_value = bias_in[N-1] ? -{1'b0,{ext{1'b0}},fixed_bias[2*bias-1+(N-es-2):(N-es-2)-1]} : {1'b0,{ext{1'b0}},fixed_bias[2*bias-1+(N-es-2):(N-es-2)-1]};
 
-//Decode
+
 wire s1 = IN1[N-1];
 wire s2 = IN2[N-1];
 wire zero_tmp1 = |IN1[N-2:0];
@@ -51,6 +47,7 @@ wire zero_tmp2 = |IN2[N-2:0];
 wire zero1 = ~(IN1[N-1] | zero_tmp1);
 wire zero2 = ~(IN2[N-1] | zero_tmp2);
 assign zero = zero1 & zero2;
+//Data Extraction
 wire rc1, rc2;
 wire [Bs-1:0] regime1, regime2;
 wire [es-1:0] e1, e2;
@@ -63,102 +60,55 @@ wire [N-es-3:0] m1 = {zero_tmp1,mant1}, m2 = {zero_tmp2,mant2};
 
 //multiplication
 wire mult_s = s1 ^ s2;
-wire [mult_bw-1:0] mult_m = m1 * m2;
-wire mult_m_ovf = mult_m[mult_bw-1];
-wire [mult_bw-1:0] mult_mN_tmp = ~mult_m_ovf ? mult_m << 1'b1 : mult_m;
-wire [mult_bw:0] mult_mN = mult_s ? -{1'b0,mult_mN_tmp} : {1'b0,mult_mN_tmp};
-wire signed [Bs+1:0] r1 = rc1 ? {2'b0,regime1} : -regime1;
-wire signed [Bs+1:0] r2 = rc2 ? {2'b0,regime2} : -regime2;
+wire [2*(N-es-2)-1:0] mult_m = m1 * m2;
+wire mult_m_ovf = mult_m[2*(N-es-2)-1];
+wire [2*(N-es-2)-1:0] mult_mN_tmp = ~mult_m_ovf ? mult_m << 1'b1 : mult_m;
+wire [2*(N-es-2):0] mult_mN = mult_s ? -{1'b0,mult_mN_tmp} : {1'b0,mult_mN_tmp};
+wire [Bs+1:0] r1 = rc1 ? {2'b0,regime1} : -regime1;
+wire [Bs+1:0] r2 = rc2 ? {2'b0,regime2} : -regime2;
 wire [Bs+es+1:0] mult_e;
-add_N_Cin #(.N(N), .es(es)) exp_add({r1,e1}, {r2,e2}, mult_m_ovf, mult_e);
-
-reg signed [mult_bw:0] mult_reg;
-reg [Bs+es+1:0] mult_scale_reg;
+add_N_Cin #(.N(Bs+es+1)) exp_add({r1,e1}, {r2,e2}, mult_m_ovf, mult_e);
+//レジスタの追加
+reg [2*(N-es-2):0] mult_value;
+reg [Bs+es+1:0] mult_scale;
 always @(posedge CLK or negedge RESET)begin
     if(RESET == 1'b0)
-        mult_reg <= 0;
+        mult_value <= 0;
     else if(PURGE)
-        mult_reg <= 0;
+        mult_value <= 0;
     else if(MAC_EN)
-        mult_reg <= mult_mN;
+        mult_value <= mult_mN; 
     else
-        mult_reg <= 0; 
+        mult_value <= 0;
 end
 always @(posedge CLK or negedge RESET)begin
     if(RESET == 1'b0)
-        mult_scale_reg <= 0;
+        mult_scale <= 0;
     else if(PURGE)
-        mult_scale_reg <= 0;
+        mult_scale <= 0;
     else if(MAC_EN)
-        mult_scale_reg <= mult_e;
+        mult_scale <= mult_e; 
     else
-        mult_scale_reg <= 0;
+        mult_scale <= 0;
 end
 
 //accumulation
-reg signed [mult_bw:0] mult;
-reg [Bs+es+1:0] mult_scale;
-reg [ss-1:0] q_scale_reg;
-reg signed [qsize-1:0] quire_reg;
-reg signed [qsize+mult_bw-2:0] add_value;
-reg [ss-1:0] add_scale;
-reg signed [qsize-1:0] small_value;
-reg [ss-1:0] small_scale;
-reg signed [qsize-1:0] big_value;
-reg [ss-1:0] big_scale;
-reg [ss-1:0] scale_diff;
+wire [Bs+es+1:0] s_fixed = mult_scale + bias;
+wire [2*bias+2*(N-es-2):0] fixed_value;
+wire [2*bias+2*(N-es-2):0] mult_value_s = mult_value[2*(N-es-2)] ? {{(2*bias+2*(N-es-2)+1)-(2*(N-es-2)+1){1'b1}},mult_value} : {{(2*bias+2*(N-es-2)+1)-(2*(N-es-2)+1){1'b0}},mult_value};
+DLS #(.N(2*bias+2*(N-es-2)+1), .S(Bs+es+2), .O(2*bias+2*(N-es-2)+1))to_fixed (.a(mult_value_s), .b(s_fixed), .c(fixed_value));
+wire [qsize-1+ext:0] s_fixed_value = mult_value[2*(N-es-2)] ? {1'b1,{ext{1'b1}},fixed_value[2*bias-1+2*(N-es-2):2*(N-es-2)-1]} : {1'b0,{ext{1'b0}},fixed_value[2*bias-1+2*(N-es-2):2*(N-es-2)-1]}; 
+reg [qsize-1+ext:0] quire;
 
-reg signed [qsize-1:0] quire;
-reg signed [qsize-1:0] quire_tmp;
-reg [ss-1:0] q_scale;
-reg [ss-1:0] q_scale_tmp;
-reg signed [ss-1:0] shift_q;
-always @(*) begin
-    if(BIAS_EN)begin
-        mult = acc_bias_value;
-        mult_scale = bias_ex;
-    end
-    else begin
-        mult = mult_reg;
-        mult_scale = mult_scale_reg;
-    end
-    if(mult_scale >= quire_bias) begin
-        add_value = mult <<< (quire_bias-1);
-        add_scale = mult_scale - quire_bias;
-    end
-    else begin
-        add_value = mult <<< mult_scale;
-        add_scale = 0;  
-    end
-    if(q_scale_reg >= add_scale)begin
-        scale_diff  = q_scale_reg - add_scale;
-        big_value   = quire_reg;
-        big_scale   = q_scale_reg;
-        small_value = add_value[qsize+mult_bw-2:mult_bw-1];
-        small_scale = add_scale;
-    end
-    else begin
-        scale_diff  = add_scale - q_scale_reg;
-        big_value   = add_value[qsize+mult_bw-2:mult_bw-1];
-        big_scale   = add_scale;
-        small_value = quire_reg;
-        small_scale = q_scale_reg;
-    end
-    quire   = big_value + (small_value >>> scale_diff);
-    q_scale = big_scale;
-    if(quire_reg[qsize-1:qsize-2] == 2'b01 && quire[qsize-1:qsize-2] == 2'b10) begin //plus overflow
-        quire = {1'b0,{(qsize - 1){1'b1}}};
-    end
-    if(quire_reg[qsize-1:qsize-2] == 2'b10 && quire[qsize-1:qsize-2] == 2'b01) begin //minus overflow
-        quire = {1'b1,{(qsize - 1){1'b0}}};
-    end
-    if(q_scale != {(ss){1'b1}} && quire[qsize-1]^quire[qsize-2]) begin
-        quire   = quire >>> 1;
-        q_scale = q_scale + 1;
-    end
-end
+wire [qsize-1+ext:0] quire_add = quire + s_fixed_value;
+wire A = s_fixed_value[qsize-1+ext], B = quire[qsize-1+ext], C = quire_add[qsize-1+ext];
+//オーバーフローチェック(負のオーバーフローを含む)
+wire ovf = ((A^B==0) && (B^C==1)) ? 1'b1 : 1'b0;
+wire [qsize-1+ext:0] quire_value;
+//オーバーフロー時には値を最大値に近似
+assign quire_value = ovf ? ((A==1) ? {1'b1,{qsize-1{1'b0}}} : {1'b0,{qsize-1{1'b1}}}) : quire_add;
 
-//MAC_EN
+//累積時のen信号を1サイクル遅延させるためのレジスタ
 reg acc_en;
 always @(posedge CLK or negedge RESET)begin
     if(RESET == 1'b0)
@@ -166,48 +116,50 @@ always @(posedge CLK or negedge RESET)begin
     else
         acc_en <= MAC_EN;
 end
-//quire
-always@(posedge CLK or negedge RESET)begin
+
+always @ (posedge CLK or negedge RESET) begin
     if(RESET == 1'b0)
-        quire_reg <= 0;
+        quire <= 0;
     else if(PURGE)
-        quire_reg <= 0;
-    else if(acc_en | BIAS_EN)
-        quire_reg <= quire;
+	    quire <= 0;
+    else if(BIAS_EN)
+        quire <= bias_acc_value;
+    else if(acc_en)
+        quire <= quire_value;
     else
-        quire_reg <= quire_reg;
-end
-//quire_scale
-always@(posedge CLK or negedge RESET)begin
-    if(RESET == 1'b0)
-        q_scale_reg <= 0;
-    else if(PURGE)
-        q_scale_reg <= 0;
-    else if(acc_en | BIAS_EN)
-        q_scale_reg <= q_scale;
-    else
-        q_scale_reg <= q_scale_reg;
+        quire <= quire;
 end
 
-//encode
-wire [qsize-1:0] quire_masked = RESULT_REQ_PLS ? quire_reg : 0;
-wire [qsize-1:0] quire_abs = quire_masked[qsize-1] ? -quire_masked : quire_masked;
-wire [q_s1-1:0] val_quire;
-LOD_N #(.N(qsize)) valid_quire(.in(quire_abs), .out(val_quire));
+//以下エンコード
 
-wire [qsize-1:0] quire_frac_s;
-DLS #(.N(qsize), .S(q_s1), .O(qsize)) get_qfrac (.a(quire_abs), .b(val_quire), .c(quire_frac_s));
+wire [qsize-1+ext:0] quire_masked = RESULT_REQ_PLS ? quire : 0;
 
-wire signed [es+Bs+1:0] quire_exp = q_scale_reg - (val_quire + 1) + qsize - bias;
+wire [qsize-1+ext:0] quire_m = quire_masked[qsize-1+ext] ? -quire_masked : quire_masked;
 
+wire [qsize-1+ext:0] tmp_quire_m;
+//エンコード前のovfチェック
+assign tmp_quire_m = |quire_m[qsize-2+ext:qsize-1] ? {{1+ext{1'b0}},1'b1,{(qsize-2){1'b0}}} : quire_m;
+
+wire [ss-1:0] val_quire;
+LOD_N #(.N(qsize+ext)) valid_quire(.in(tmp_quire_m), .out(val_quire));
+
+
+wire [qsize-1+ext:0] quire_frac_s;
+DLS #(.N(qsize+ext), .S(ss), .O(qsize+ext)) get_qfrac (.a(tmp_quire_m), .b(val_quire), .c(quire_frac_s));
+
+wire [es+Bs+1:0] quire_exp = ((qsize+ext-1)-val_quire) - bias;
+
+//指数部からr_oとe_oの抽出
 wire [es-1:0] e_o;
 wire [Bs:0] r_o;
 reg_exp_op #(.es(es), .Bs(Bs), .N(N)) e_r_out(quire_exp, e_o, r_o);
 
-wire [2*N-1+3:0] tmp_o = {{N{~quire_exp[es+Bs+1]}},quire_exp[es+Bs+1],e_o,quire_frac_s[qsize-2:(qsize-2)-((N-1-es)+1)],|quire_frac_s[((qsize-2)-((N-1-es)+1))-1:0]};
+wire [2*N-1+3:0] tmp_o = {{N{~quire_exp[es+Bs+1]}},quire_exp[es+Bs+1],e_o,quire_frac_s[qsize-2+ext:(qsize-2+ext)-((N-1-es)+1)],|quire_frac_s[((qsize-2+ext)-((N-1-es)+1))-1:0]};
+
 
 wire [3*N-1+3:0] tmp1_o;
-DRS #(.N(3*N+3), .S(Bs+1), .O(3*N+3)) drs (.a({tmp_o,{N{1'b0}}}), .b(r_o), .c(tmp1_o));
+
+DRS #(.N(3*N+3), .S(Bs+1)) drs (.a({tmp_o,{N{1'b0}}}), .b(r_o), .c(tmp1_o));
 
 wire L = tmp1_o[N+4], G = tmp1_o[N+3], R = tmp1_o[N+2], St = |tmp1_o[N+1:0],
      ulp = ((G & (R | St)) | (L & G & ~(R | St)));
@@ -217,14 +169,16 @@ wire [N:0] tmp1_o_rnd_ulp;
 add_N #(.N(N)) uut_add_ulp (tmp1_o[2*N-1+3:N+3], rnd_ulp, tmp1_o_rnd_ulp);
 wire [N-1:0] tmp1_o_rnd = (r_o < N -1) ? tmp1_o_rnd_ulp[N-1:0] : tmp1_o[2*N-1+3:N+3];
 
-wire [N-2:0] tmp1_oN = quire_masked[qsize-1] ? -tmp1_o_rnd[N-1:1] : tmp1_o_rnd[N-1:1];
+wire [N-2:0] tmp1_oN = quire_masked[qsize-1+ext] ? -tmp1_o_rnd[N-1:1] : tmp1_o_rnd[N-1:1];
 
 wire [N-1:0] OUT_tmp_p;
 wire [N-1:0] OUT_tmp_n;
-assign OUT_tmp_p = (|tmp1_oN) ? {quire_masked[qsize-1], tmp1_oN} : {quire_masked[qsize-1],{(N-2){1'b0}},1'b1};
-assign OUT_tmp_n = (|tmp1_oN) ? {quire_masked[qsize-1], tmp1_oN} : {N{1'b1}};
+assign OUT_tmp_p = (|tmp1_oN) ? {quire_masked[qsize-1+ext], tmp1_oN} : {quire_masked[qsize-1+ext],{(N-2){1'b0}},1'b1};
+assign OUT_tmp_n = (|tmp1_oN) ? {quire_masked[qsize-1+ext], tmp1_oN} : {N{1'b1}};
 wire [N-1:0] OUT_tmp;
-assign OUT = (|quire_reg | q_scale_reg) ? (quire_masked[qsize-1] ? OUT_tmp_n : OUT_tmp_p) : 0;
+assign OUT_tmp = quire_masked[qsize-1+ext] ? OUT_tmp_n : OUT_tmp_p;
+assign OUT = (quire_masked) ? OUT_tmp : 0;
+
 
 endmodule
 
@@ -322,6 +276,7 @@ parameter Sf = bekizyo(S);
         assign vld = |in;
         assign out = ~in[1] & in[0];
       end
+    //Nが奇数の場合には右側に0が補われて偶数として再帰
     else if (N & (N-1))
       LOD #(Sf) LOD ({in,{((Sf) - N) {1'b0}}},out,vld);
     else
@@ -358,22 +313,11 @@ assign c = tmp[S-1];
 endmodule
 
 module add_N_Cin (a,b,cin,c);
-function [31:0] log2;
-input reg [31:0] value;
-	begin
-	value = value-1;
-	for (log2=0; value>0; log2=log2+1)
-        	value = value>>1;
-      	end
-endfunction
-parameter N = 8;
-parameter Bs = log2(N);
-parameter es = 1;
-parameter bias = (2**(es+1))*(N-2);
-input signed [Bs+es+1:0] a,b;
+parameter N=8;
+input [N:0] a,b;
 input cin;
-output [Bs+es+1:0] c;
-assign c = a + b + cin + bias;
+output [N:0] c;
+assign c = a + b + cin;
 endmodule
 
 module reg_exp_op (exp_o, e_o, r_o);
@@ -412,12 +356,11 @@ endmodule
 module DRS(a,b,c);
         parameter N=8;
         parameter S=3;
-        parameter O=8;
         input [N-1:0] a;
         input [S-1:0] b;
-        output [O-1:0] c;
+        output [N-1:0] c;
 
-wire [O-1:0] tmp [S-1:0];
+wire [N-1:0] tmp [S-1:0];
 assign tmp[0]  = b[0] ? a >> 7'd1  : a; 
 genvar i;
 generate
@@ -427,20 +370,4 @@ generate
 endgenerate
 assign c = tmp[S-1];
 
-endmodule
-
-module DRS_S(a,b,c);
-parameter N = 8;
-parameter S = 3;
-parameter O = 8;
-input [N-1:0] a;
-input [S-1:0] b;
-output [O-1:0] c;
-wire signed [N-1:0] a2;
-wire signed [S-1:0] b2;
-wire signed [O-1:0] c2;
-assign a2 = a;
-assign b2 = b;
-assign c2 = a2 >>> b2;
-assign c = c2;
 endmodule
