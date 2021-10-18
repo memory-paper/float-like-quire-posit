@@ -17,9 +17,9 @@ This is a testbench for the arithmetic unit.
 
 It can test the following four HDLs.
 1. posit_mac.v: Original quire mac unit. Quire size is static.
-2. posit_mac_es0.v: original quire mac unit when es is 0.
-3. posit_mac_f.v: float-like quire mac unit. quire size is changeable.
-4. posit_mac_f_es0.v: float-like quire mac unit when es is 0.
+2. posit_mac_es0.v: Original quire mac unit when es is 0.
+3. posit_mac_f.v: Float-like quire mac unit. quire size is changeable.
+4. posit_mac_f_es0.v: Float-like quire mac unit when es is 0.
 
 Please match the following parameters with the generated test data. 
 
